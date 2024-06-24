@@ -284,6 +284,8 @@ def _get_feature(
   elif (isinstance(feature_type, tf.io.FixedLenFeature) or
         isinstance(feature_type, tf.io.FixedLenSequenceFeature)):
     shape = feature_type.shape
+    if isinstance(shape, int):
+      shape = [shape]
     shape = shape if len(shape) == 1 else [1]
     if len(shape) > 1:
       raise ValueError(
@@ -327,6 +329,8 @@ def _get_feature_list(
     expected_len = None
   elif isinstance(feature_type, tf.io.FixedLenSequenceFeature):
     shape = feature_type.shape
+    if isinstance(shape, int):
+      shape = [shape]
     if len(shape) > 1:
       raise ValueError(
           f'Shape must be of length 1 but shape={shape} was provided!')
@@ -334,7 +338,7 @@ def _get_feature_list(
   value_list = get_default_value(feature_name, default_values, output_names,
                                  expected_len, list_of_list=True)
 
-  # If not in the default_values, we fallback to single value that we repeat
+  # If not in the default_values, we fall back to single value that we repeat
   # default_feature_list_len times.
   if value_list is None:
     feature = _get_feature(feature_name, feature_type, dict(), output_names)
@@ -385,7 +389,7 @@ class SequenceExampleParserBuilder(BaseParserBuilder):
 
     The same input feature can be added more than once with different
     `output_name` but always with the same `feature_type`. This is useful when
-    multiple views (with different processings down the line) of the same data
+    multiple views (with different processing down the line) of the same data
     is needed.
 
     Args:
@@ -473,7 +477,7 @@ class ExampleParserBuilder(BaseParserBuilder):
     self._features = {}
     self._name_dict: Dict[str, List[str]] = {}
 
-  def parse_feature(
+  def parse_feature(  # pytype: disable=signature-mismatch  # overriding-parameter-type-checks
       self,
       feature_name: str,
       feature_type: Union[tf.io.VarLenFeature, tf.io.FixedLenFeature],

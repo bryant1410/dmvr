@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """A simple tokenizer interface with basic implementations."""
 
 import abc
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
+import clip.simple_tokenizer
 import tensorflow as tf
 import tensorflow_text
 
@@ -32,7 +32,7 @@ class TextTokenizer(abc.ABC):
 
   @abc.abstractmethod
   def string_tensor_to_indices(self,
-                               string_tensor: tf.Tensor,
+                               string_tensor: Union[tf.Tensor, Sequence[str]],
                                prepend_bos: bool = False,
                                append_eos: bool = False,
                                max_num_tokens: Optional[int] = 32) -> tf.Tensor:
@@ -45,7 +45,7 @@ class TextTokenizer(abc.ABC):
       append_eos: Whether to append the EOS (end of sentence) token to the
         output tokens.
       max_num_tokens: Maximum number of tokens to return per caption. If
-        provided, the tokens will be paded / cut at a the given size. If not, a
+        provided, the tokens will be padded / cut at the given size. If not, a
         tensor of unknown size will be returned.
 
     Returns:
@@ -116,7 +116,7 @@ class SentencePieceTokenizer(TextTokenizer):
           model=f.read(), out_type=tf.int32, add_bos=True, add_eos=True)
 
   def string_tensor_to_indices(self,
-                               string_tensor: tf.Tensor,
+                               string_tensor: Union[tf.Tensor, Sequence[str]],
                                prepend_bos: bool = False,
                                append_eos: bool = False,
                                max_num_tokens: Optional[int] = 32) -> tf.Tensor:
@@ -147,7 +147,7 @@ class SentencePieceTokenizer(TextTokenizer):
     if max_num_tokens:
       tokenized = tokenized[:max_num_tokens]
       num_tokens = len(tokenized)
-      tokenized = tokenized + [self._pad_token] * (max_num_tokens-num_tokens)
+      tokenized = tokenized + [self._pad_token] * (max_num_tokens - num_tokens)
     return tokenized
 
   @property
@@ -185,7 +185,7 @@ class WordTokenizer(TextTokenizer):
     Args:
       vocabulary_path: A path to a vocabulary file. The vocabulary is a simple
         text file where each line is of the form: 'idx_word word' or simply
-          'word' (the line index will be used). The vocabulary should at least
+        'word' (the line index will be used). The vocabulary should at least
         contain the words: '<pad>', '<bos>', '<eos>' and '<unk>'.
     """
     # Parse the vocabulary. The expected format is either one word per line (and
@@ -214,7 +214,7 @@ class WordTokenizer(TextTokenizer):
     # Validate.
     if len(idx2word) != len(set(idx2word.values())):
       raise ValueError('Words in vocabulary are not unique.')
-    basic_tokens = set((self.PAD, self.BOS, self.EOS, self.UNK))
+    basic_tokens = {self.PAD, self.BOS, self.EOS, self.UNK}
     if basic_tokens & set(idx2word.values()) != basic_tokens:
       raise ValueError(
           f'Vocabulary does not contain all basic tokens {basic_tokens}.')
@@ -242,7 +242,7 @@ class WordTokenizer(TextTokenizer):
         self._unk_token)
 
   def string_tensor_to_indices(self,
-                               string_tensor: tf.Tensor,
+                               string_tensor: Union[tf.Tensor, Sequence[str]],
                                prepend_bos: bool = False,
                                append_eos: bool = False,
                                max_num_tokens: Optional[int] = 32) -> tf.Tensor:
@@ -295,7 +295,7 @@ class WordTokenizer(TextTokenizer):
     if max_num_tokens:
       tokenized = tokenized[:max_num_tokens]
       num_tokens = len(tokenized)
-      tokenized = tokenized + [self._pad_token] * (max_num_tokens-num_tokens)
+      tokenized = tokenized + [self._pad_token] * (max_num_tokens - num_tokens)
     return tokenized
 
   @property
@@ -322,7 +322,7 @@ class WordTokenizer(TextTokenizer):
 class BertTokenizer(TextTokenizer):
   """BERT tokenizer.
 
-  Standand BERT vocabularies can be found in tf hub.
+  Standard BERT vocabularies can be found in tf hub.
   """
 
   PAD = '[PAD]'
@@ -351,7 +351,7 @@ class BertTokenizer(TextTokenizer):
     # Validate.
     if len(idx2word) != len(set(idx2word.values())):
       raise ValueError('Words in vocabulary are not unique.')
-    basic_tokens = set((self.PAD, self.BOS, self.EOS, self.UNK))
+    basic_tokens = {self.PAD, self.BOS, self.EOS, self.UNK}
     if basic_tokens & set(idx2word.values()) != basic_tokens:
       raise ValueError(
           f'Vocabulary does not contain all basic tokens {basic_tokens}.')
@@ -375,7 +375,7 @@ class BertTokenizer(TextTokenizer):
         lower_case=True)
 
   def string_tensor_to_indices(self,
-                               string_tensor: tf.Tensor,
+                               string_tensor: Union[tf.Tensor, Sequence[str]],
                                prepend_bos: bool = False,
                                append_eos: bool = False,
                                max_num_tokens: Optional[int] = 32) -> tf.Tensor:
@@ -411,8 +411,8 @@ class BertTokenizer(TextTokenizer):
       idx_list_cut.append(token_id)
 
     # Decode back to string.
-    words_list = [self._idx2word[idx] for idx in idx_list_cut]
-    return (' '.join(words_list)).replace(' ##', '')
+    word_iter = (self._idx2word[idx] for idx in idx_list_cut)
+    return ' '.join(word_iter).replace(' ##', '')
 
   @property
   def vocab_size(self):
@@ -441,3 +441,96 @@ class BertTokenizer(TextTokenizer):
   @property
   def sep_token(self):
     return self._eos_token
+
+
+class ClipTokenizer(TextTokenizer):
+  """CLIP tokenizer."""
+
+  BOS = '<|startoftext|>'
+  EOS = '<|endoftext|>'
+  UNK = EOS
+
+  def __init__(
+      self,
+      vocabulary_path: Optional[str] = None,
+  ) -> None:
+    """Initializes the `ClipTokenizer`.
+
+    Args:
+      vocabulary_path: A path to a CLIP-style vocabulary file.
+    """
+    self._tokenizer = clip.simple_tokenizer.SimpleTokenizer(vocabulary_path)
+
+    self._vocab_size = len(self._tokenizer.encoder)
+    self._pad_token = 0
+    self._bos_token = self._tokenizer.encoder[self.BOS]
+    self._eos_token = self._tokenizer.encoder[self.EOS]
+    self._unk_token = self._tokenizer.encoder[self.UNK]
+
+    self._initialized = False
+
+  def initialize(self) -> None:
+    self._initialized = True
+
+  def _clip_tokenize(self, texts: Union[tf.Tensor,
+                                        Sequence[str]]) -> tf.RaggedTensor:
+    if isinstance(texts, tf.Tensor):
+      texts = [text.decode('utf-8') for text in texts._numpy().tolist()]  # pylint: disable=protected-access
+    return tf.ragged.constant([self._tokenizer.encode(text) for text in texts],
+                              dtype=tf.int32)
+
+  def string_tensor_to_indices(self,
+                               string_tensor: Union[tf.Tensor, Sequence[str]],
+                               prepend_bos: bool = False,
+                               append_eos: bool = False,
+                               max_num_tokens: Optional[int] = 77) -> tf.Tensor:
+    if not self._initialized:  # To satisfy the tests.
+      raise RuntimeError('Model was not initialized. Call `initialize` method.')
+
+    batch_size = tf.shape(input=string_tensor)[0]
+
+    tokenized = tf.py_function(
+        func=self._clip_tokenize,
+        inp=[string_tensor],
+        Tout=tf.RaggedTensorSpec([None, None], dtype=tf.int32))
+
+    if append_eos:
+      eos_tensor = tf.ragged.constant([self._eos_token])
+      eos_tensor = tf.tile(eos_tensor, [batch_size])
+      eos_tensor = tf.expand_dims(eos_tensor, axis=1)
+      tokenized = tf.concat([tokenized, eos_tensor], axis=1)
+    if prepend_bos:
+      bos_tensor = tf.ragged.constant([self._bos_token])
+      bos_tensor = tf.tile(bos_tensor, [batch_size])
+      bos_tensor = tf.expand_dims(bos_tensor, axis=1)
+      tokenized = tf.concat([bos_tensor, tokenized], axis=1)
+
+    # Pad to `max_num_tokens`.
+    shape = None if max_num_tokens is None else [None, max_num_tokens]
+    return tokenized.to_tensor(default_value=self._pad_token, shape=shape)
+
+  def indices_to_string(self, indices: Sequence[int]) -> str:
+    text = self._tokenizer.decode(i for i in indices if i != self._pad_token)
+    start_pos = len(self.BOS) if text.startswith(self.BOS) else 0
+    end_pos = text.index(self.EOS) if self.EOS in text else None
+    return text[start_pos:end_pos].strip()
+
+  @property
+  def vocab_size(self) -> int:
+    return self._vocab_size
+
+  @property
+  def pad_token(self) -> int:
+    return self._pad_token
+
+  @property
+  def bos_token(self) -> int:
+    return self._bos_token
+
+  @property
+  def eos_token(self) -> int:
+    return self._eos_token
+
+  @property
+  def unk_token(self) -> int:
+    return self._unk_token

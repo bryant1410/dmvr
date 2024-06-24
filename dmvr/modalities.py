@@ -16,6 +16,7 @@
 
 import functools
 from typing import Optional
+from typing import Union
 
 from absl import logging
 from dmvr import builders
@@ -43,12 +44,16 @@ def add_image(
     stride: int = 1,
     num_test_clips: int = 1,
     min_resize: int = 224,
+    resize_method: str = tf.image.ResizeMethod.BILINEAR,
     crop_size: int = 200,
     zero_centering_image: bool = False,
     sync_random_state: bool = True,
     is_rgb: Optional[bool] = True,
     is_flow: bool = False,
-    random_flip: bool = True):
+    random_flip: bool = True,
+    normalization_mean: Union[tf.Tensor, float] = 0,
+    normalization_std: Union[tf.Tensor, float] = 1,
+) -> None:
   """Adds functions to process image feature to builders.
 
   This function expects the input to be either a `tf.train.SequenceExample` (for
@@ -97,15 +102,16 @@ def add_image(
     output_feature_name: Name of the feature in the output features dictionary.
       Exposing this as an argument allows using this function for different
       image features within a single dataset.
-    is_training: Whether or not in training mode. If `True`, random sample, crop
-      and left right flip is used.
+    is_training: Whether in training mode. If `True`, random sample, crop and
+      left right flip is used.
     num_frames: Number of frames per subclip. For single images, use 1.
     stride: Temporal stride to sample frames.
     num_test_clips: Number of test clips (1 by default). If more than 1, this
       will sample multiple linearly spaced clips within each video at test time.
       If 1, then a single clip in the middle of the video is sampled. The clips
-      are aggreagated in the batch dimension.
+      are aggregated in the batch dimension.
     min_resize: Frames are resized so that `min(height, width)` is `min_resize`.
+    resize_method: A resizing method.
     crop_size: Final size of the frame after cropping the resized frames. Both
       height and width are the same.
     zero_centering_image: If `True`, frames are normalized to values in [-1, 1].
@@ -114,8 +120,8 @@ def add_image(
       in sync between different modalities. All modalities having this option
       `True` will use the same outcome in random operations such as sampling and
       cropping.
-    is_rgb: If `True`, the number of channels in the JPEG is 3, if False, 1.
-      If is_flow is `True`, `is_rgb` should be set to `None` (see below).
+    is_rgb: If `True`, the number of channels in the JPEG is 3, if False, 1. If
+      is_flow is `True`, `is_rgb` should be set to `None` (see below).
     is_flow: If `True`, the image is assumed to contain flow and will be
       processed as such. Note that the number of channels in the JPEG for flow
       is 3, but only two channels will be output corresponding to the valid
@@ -123,6 +129,8 @@ def add_image(
     random_flip: If `True`, a random horizontal flip is applied to the input
       image. This augmentation may not be used if the label set contains
       direction related classes, such as `pointing left`, `pointing right`, etc.
+    normalization_mean: value to subtract from the input image to normalize it.
+    normalization_std: value to divide by from the input image to normalize it.
   """
 
   # Validate parameters.
@@ -189,7 +197,7 @@ def add_image(
   # Note that for flow, 3 channels are stored in the JPEG: the first two
   # corresponds to horizontal and vertical displacement, respectively.
   # The last channel contains zeros and is dropped later in the preprocessing.
-  # Hence the output number of channels for flow is 2.
+  # Hence, the output number of channels for flow is 2.
   num_raw_channels = 3 if (is_rgb or is_flow) else 1
   decoder_builder.add_fn(
       fn=lambda x: processors.decode_jpeg(x, channels=num_raw_channels),
@@ -205,7 +213,10 @@ def add_image(
 
   # Resize images (resize happens only if necessary to save compute).
   preprocessor_builder.add_fn(
-      fn=lambda x: processors.resize_smallest(x, min_resize, is_flow=is_flow),
+      # pylint: disable=g-long-lambda
+      fn=lambda x: processors.resize_smallest(
+          x, min_resize, is_flow=is_flow, method=resize_method),
+      # pylint: enable=g-long-lambda
       feature_name=output_feature_name,
       fn_name=f'{output_feature_name}_resize_smallest')
 
@@ -257,8 +268,18 @@ def add_image(
         feature_name=output_feature_name,
         fn_name=f'{output_feature_name}_normalize')
 
+  preprocessor_builder.add_fn(
+      fn=lambda x: x - normalization_mean,
+      feature_name=output_feature_name,
+      fn_name=f'{output_feature_name}_subtract_given_mean')
+
+  preprocessor_builder.add_fn(
+      fn=lambda x: x / normalization_std,
+      feature_name=output_feature_name,
+      fn_name=f'{output_feature_name}_divide_by_given_std')
+
   if num_test_clips > 1 and not is_training:
-    # In this case, multiple clips are merged together in batch dimenstion which
+    # In this case, multiple clips are merged together in batch dimension which
     # will be `B * num_test_clips`.
     postprocessor_builder.add_fn(
         fn=lambda x: tf.reshape(  # pylint: disable=g-long-lambda
@@ -454,8 +475,8 @@ def add_text(
     decoder_builder: An instance of a `builders.DecoderBuilder`.
     preprocessor_builder: An instance of a `builders.PreprocessorBuilder`.
     tokenizer: An instance of a tokenizer.
-    is_training: Whether or not in training mode. This will be used to randomly
-      sample the captions.
+    is_training: Whether in training mode. This will be used to randomly sample
+      the captions.
     input_feature_name: Name of the feature in the input `tf.train.Example` or
       `tf.train.SequenceExample`. Exposing this as an argument allows using this
       function for different text features within a single dataset.
@@ -471,9 +492,9 @@ def add_text(
     max_num_captions: Maximum number of captions to keep. If there are more
       captions in the proto, only the first `max_num_captions` will be returned
       is `is_training` is set to `False`. If `is_training` is `True`, then
-      `max_num_captions` will be randomly sampled. Finally if the proto contains
-      less than `max_num_captions`, we pad with empty srings to make sure there
-      are `max_num_captions` in total.
+      `max_num_captions` will be randomly sampled. Finally, if the proto
+      contains less than `max_num_captions`, we pad with empty strings to make
+      sure there are `max_num_captions` in total.
     max_num_tokens: Maximum number of tokens to keep from the text for each
       caption. If there are more tokens, sequence is cropped, if less, the
       caption is padded using the tokenizer pad id. The sequence is unmodified
@@ -596,8 +617,7 @@ def add_audio(
     output_feature_name: Name of the feature in the output features dictionary.
       Exposing this as an argument allows using this function for different
       audio features within a single dataset
-    is_training: Whether or not in training mode. If `True`, random sample is
-      used.
+    is_training: Whether in training mode. If `True`, random sample is used.
     num_samples: Number of samples per subclip.
     stride: Temporal stride to sample audio signal.
     sample_rate: The original sample rate of the input audio stored in sstables.
@@ -606,7 +626,7 @@ def add_audio(
     num_test_clips: Number of test clips (1 by default). If more than 1, this
       will sample multiple linearly spaced clips within each audio at test time.
       If 1, then a single clip in the middle of the audio is sampled. The clips
-      are aggreagated in the batch dimension.
+      are aggregated in the batch dimension.
     sync_random_state: Whether to use stateful option to keep random operations
       in sync between different modalities. All modalities having this option
       `True` will use the same outcome in random operations such as sampling and
@@ -674,7 +694,7 @@ def add_audio(
         feature_name=builders.AUDIO_FEATURE_NAME)
 
   if num_test_clips > 1 and not is_training:
-    # In this case, multiple clips are merged together in batch dimenstion which
+    # In this case, multiple clips are merged together in batch dimension which
     # will be `B * num_test_clips`.
     postprocessor_builder.add_fn(
         fn=lambda x: tf.reshape(x, (-1, x.shape[-1])),
@@ -700,8 +720,8 @@ def add_spectrogram(
     num_test_clips: int = 1):
   """Adds functions to process audio spectrogram feature to builders.
 
-  Note that this function does not extract and parse audio feature. Instead it
-  should be used after a `add_audio` function. The output spectrgram is of the
+  Note that this function does not extract and parse audio feature. Instead, it
+  should be used after a `add_audio` function. The output spectrogram is of the
   shape [batch_size, num_frames, num_features].
 
   Args:
@@ -717,7 +737,7 @@ def add_spectrogram(
     sample_rate: The sample rate of the input audio.
     spectrogram_type: The type of the spectrogram to be extracted from the
       waveform. Can be either `spectrogram`, `logmf`, and `mfcc`.
-    frame_length: The length of each spectroram frame.
+    frame_length: The length of each spectrogram frame.
     frame_step: The stride of spectrogram frames.
     num_features: The number of spectrogram features.
     lower_edge_hertz: Lowest frequency to consider.
@@ -728,7 +748,7 @@ def add_spectrogram(
     num_test_clips: Number of test clips (1 by default). If more than 1, this
       will sample multiple linearly spaced clips within each audio at test time.
       If 1, then a single clip in the middle of the audio is sampled. The clips
-      are aggreagated in the batch dimension.
+      are aggregated in the batch dimension.
   """
   # Validate parameters.
   if is_training and num_test_clips != 1:
